@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagram</title>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  #status { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 10;
+            font: 13px -apple-system, sans-serif; padding: 4px 10px; border-radius: 12px;
+            background: #e9ecef; color: #343a40; pointer-events: none; }
+  #status.warn { background: #ffe8cc; color: #a34a00; }
+</style>
+<script>window.EXCALIDRAW_ASSET_PATH = "https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/";</script>
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<div id="status">Loading…</div>
+<script>
+const SAVE_DELAY_MS = 700;
+const POLL_MS = 2000;
+const relativePath = new URLSearchParams(location.search).get("file");
+const apiUrl = `/api/file?file=${encodeURIComponent(relativePath)}`;
+const statusPill = document.getElementById("status");
+document.title = relativePath.split("/").pop().replace(".excalidraw", "");
+
+let excalidrawApi = null;
+let diskMtime = 0;
+let lastSavedJson = null;
+let saveTimer = null;
+let pendingSave = false;
+let saving = false;
+
+function showStatus(text, isWarning = false) {
+  statusPill.textContent = text;
+  statusPill.className = isWarning ? "warn" : "";
+}
+
+function sceneJson(elements, appState, files) {
+  return ExcalidrawLib.serializeAsJSON(elements, appState, files, "local");
+}
+
+async function fetchDiagram() {
+  const response = await fetch(apiUrl, { cache: "no-store" });
+  if (!response.ok) {
+    const reason = await response.json().then(body => body.error, () => response.status);
+    throw new Error(`Cannot load ${relativePath}: ${reason}`);
+  }
+  return response.json();
+}
+
+function loadIntoEditor(scene) {
+  const elements = ExcalidrawLib.restoreElements(scene.elements, null);
+  excalidrawApi.updateScene({ elements });
+  lastSavedJson = sceneJson(excalidrawApi.getSceneElements(), excalidrawApi.getAppState(), excalidrawApi.getFiles());
+}
+
+async function reloadFromDisk(message) {
+  const diagram = await fetchDiagram();
+  diskMtime = diagram.mtime;
+  loadIntoEditor(diagram.scene);
+  showStatus(message, true);
+}
+
+async function save(json) {
+  pendingSave = false;
+  saving = true;
+  showStatus("Saving…");
+  try {
+    const response = await fetch(`${apiUrl}&base_mtime=${diskMtime}`, { method: "PUT", body: json });
+    if (response.status === 409) {
+      await reloadFromDisk("File changed on disk: reloaded, your last edit was not saved");
+      return;
+    }
+    if (!response.ok) throw new Error(`Save failed (${response.status})`);
+    diskMtime = (await response.json()).mtime;
+    lastSavedJson = json;
+    showStatus("Saved");
+  } catch (error) {
+    showStatus(error.message, true);
+  } finally {
+    saving = false;
+  }
+}
+
+function onSceneChange(elements, appState, files) {
+  const json = sceneJson(elements, appState, files);
+  // The first change is Excalidraw finishing the load; use it as the saved baseline.
+  if (lastSavedJson === null) {
+    lastSavedJson = json;
+    showStatus("Auto-save on");
+    return;
+  }
+  if (json === lastSavedJson) return;
+  pendingSave = true;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => save(json), SAVE_DELAY_MS);
+}
+
+// Claude may edit the file while it is open: pick that up without a manual refresh.
+async function pollDisk() {
+  if (saving || pendingSave || lastSavedJson === null) return;
+  try {
+    const diagram = await fetchDiagram();
+    if (diagram.mtime > diskMtime + 0.001 && !saving && !pendingSave) {
+      diskMtime = diagram.mtime;
+      loadIntoEditor(diagram.scene);
+      showStatus("Updated from disk");
+    }
+  } catch (error) {
+    showStatus(error.message, true);
+  }
+}
+
+// Open idea:// links in the same tab so Chrome hands them to IntelliJ without leaving a blank tab.
+function openLink(element, event) {
+  if (!element.link.startsWith("idea://")) return;
+  event.preventDefault();
+  window.location.href = element.link;
+}
+
+async function start() {
+  const diagram = await fetchDiagram();
+  diskMtime = diagram.mtime;
+  const editor = React.createElement(ExcalidrawLib.Excalidraw, {
+    initialData: { ...diagram.scene, scrollToContent: true },
+    excalidrawAPI: api => { excalidrawApi = api; },
+    onChange: onSceneChange,
+    onLinkOpen: openLink,
+  });
+  ReactDOM.createRoot(document.getElementById("root")).render(editor);
+  setInterval(pollDisk, POLL_MS);
+}
+
+start().catch(error => showStatus(error.message, true));
+</script>
+</body>
+</html>

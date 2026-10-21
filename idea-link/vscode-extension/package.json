@@ -1,0 +1,11 @@
+{
+  "name": "idealine",
+  "displayName": "IntelliJ line links",
+  "description": "Opens vscode://paddymac.idealine/<absolute path>:<line> links (e.g. in a markdown preview) in IntelliJ, with no browser tab.",
+  "publisher": "paddymac",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onUri"],
+  "main": "./extension.js"
+}
